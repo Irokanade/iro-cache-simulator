@@ -328,13 +328,13 @@ void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
     core->perf_counters.l2_misses++;
 
     uint8_t l2_victim = evict_l2(cores, l2_meta, l2_data, l2_index);
+    uint8_t l1_victim =
+        evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+
     std::memset(cache_line, 0, LINE_SIZE);
     l2_cache_fill(l2_meta, l2_data, core_id, l2_tag, l2_victim, cache_line,
                   MESIState::EXCLUSIVE, &l2_meta->core_valid_d[l2_victim],
                   &l2_meta->core_valid_i[l2_victim]);
-
-    uint8_t l1_victim =
-        evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
     l1_cache_fill(l1_meta, l1_data, l1_tag, l1_victim, cache_line,
                   MESIState::EXCLUSIVE);
     std::memcpy(data, cache_line + offset, data_size);
