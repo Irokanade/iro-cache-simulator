@@ -139,7 +139,7 @@ static void snoop_invalidate_peers_i(Core *cores, uint8_t sharers,
     }
 }
 
-static uint8_t evict_l1d(L1SetMeta *l1_meta, L1SetData *l1_data,
+static uint8_t l1d_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
                          uint16_t l1_index, L2SetMeta l2_metas[],
                          L2SetData l2_datas[], uint8_t core_id)
 {
@@ -178,7 +178,7 @@ static uint8_t evict_l1d(L1SetMeta *l1_meta, L1SetData *l1_data,
     return victim;
 }
 
-static uint8_t evict_l1i(L1SetMeta *l1_meta, L1SetData *l1_data,
+static uint8_t l1i_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
                          uint16_t l1_index, L2SetMeta l2_metas[],
                          L2SetData l2_datas[], uint8_t core_id)
 {
@@ -210,7 +210,7 @@ static uint8_t evict_l1i(L1SetMeta *l1_meta, L1SetData *l1_data,
     return victim;
 }
 
-static uint8_t evict_l2(Core *cores, L2SetMeta *l2_meta, L2SetData *l2_data,
+static uint8_t l2_evict(Core *cores, L2SetMeta *l2_meta, L2SetData *l2_data,
                         uint16_t l2_index)
 {
     for (uint8_t i = 0; i < NUM_L2_WAYS; i++) {
@@ -300,7 +300,7 @@ void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
     uint8_t l2_hit_way;
     if (l2_find_way(l2_meta, l2_tag, &l2_hit_way)) {
         uint8_t l1_victim =
-            evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+            l1d_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
 
         std::memcpy(cache_line, l2_data->data[l2_hit_way], LINE_SIZE);
         plru_update<uint16_t, NUM_L2_WAYS>(&l2_meta->plru_bits, l2_hit_way);
@@ -327,9 +327,9 @@ void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
 
     core->perf_counters.l2_misses++;
 
-    uint8_t l2_victim = evict_l2(cores, l2_meta, l2_data, l2_index);
+    uint8_t l2_victim = l2_evict(cores, l2_meta, l2_data, l2_index);
     uint8_t l1_victim =
-        evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+        l1d_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
 
     std::memset(cache_line, 0, LINE_SIZE);
     l2_cache_fill(l2_meta, l2_data, core_id, l2_tag, l2_victim, cache_line,
@@ -402,7 +402,7 @@ void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
         std::memcpy(cache_line + offset, data, data_size);
 
         uint8_t l1_victim =
-            evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+            l1d_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
         l1_cache_fill(l1_meta, l1_data, l1_tag, l1_victim, cache_line,
                       MESIState::MODIFIED);
 
@@ -420,9 +420,9 @@ void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
     std::memset(cache_line, 0, LINE_SIZE);
     std::memcpy(cache_line + offset, data, data_size);
 
-    uint8_t l2_victim = evict_l2(cores, l2_meta, l2_data, l2_index);
+    uint8_t l2_victim = l2_evict(cores, l2_meta, l2_data, l2_index);
     uint8_t l1_victim =
-        evict_l1d(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+        l1d_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
 
     l2_cache_fill(l2_meta, l2_data, core_id, l2_tag, l2_victim, cache_line,
                   MESIState::MODIFIED, &l2_meta->core_valid_d[l2_victim],
