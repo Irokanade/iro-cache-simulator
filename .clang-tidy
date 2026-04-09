@@ -1,0 +1,2 @@
+Checks: '-*,cppcoreguidelines-pro-type-cstyle-cast'
+WarningsAsErrors: ''
