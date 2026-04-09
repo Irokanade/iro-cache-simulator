@@ -5,3 +5,4 @@ AlignConsecutiveAssignments: None
 
 BreakBeforeBraces: Linux
 InsertBraces: true
+AlwaysBreakTemplateDeclarations: Yes
