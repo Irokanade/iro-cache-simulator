@@ -31,6 +31,10 @@ static void col_major_order(CPU *cpu)
 int main()
 {
     CPU *cpu = static_cast<CPU *>(std::calloc(1, sizeof(CPU)));
+    if (!cpu) {
+        std::fprintf(stderr, "Failed to allocate CPU\n");
+        return 1;
+    }
 
     row_major_order(cpu);
     std::printf("row-major: L1D misses: %llu L2 misses: %llu\n",
