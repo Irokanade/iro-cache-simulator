@@ -1,6 +1,7 @@
 #include "cpu.h"
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 template <typename T, uint8_t WAYS>
@@ -178,9 +179,8 @@ static uint8_t l1d_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
     return victim;
 }
 
-static uint8_t l1i_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
-                         uint16_t l1_index, L2SetMeta *l2_metas,
-                         L2SetData *l2_datas, uint8_t core_id)
+static uint8_t l1i_evict(L1SetMeta *l1_meta, uint16_t l1_index,
+                         L2SetMeta *l2_metas, uint8_t core_id)
 {
     for (uint8_t i = 0; i < NUM_L1_WAYS; i++) {
         if (l1_meta->state[i] == MESIState::INVALID) {
@@ -191,7 +191,6 @@ static uint8_t l1i_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
     uint8_t victim = plru_victim<uint8_t, NUM_L1_WAYS>(l1_meta->plru_bits);
     uint64_t victim_addr = l1_to_addr(l1_meta->tag[victim], l1_index);
     L2SetMeta *l2_meta = &l2_metas[l2_to_index(victim_addr)];
-    L2SetData *l2_data = &l2_datas[l2_to_index(victim_addr)];
     uint64_t l2_tag = l2_to_tag(victim_addr);
 
     uint8_t l2_way;
@@ -446,7 +445,6 @@ void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
     uint16_t l2_index = l2_to_index(address);
     uint64_t l2_tag = l2_to_tag(address);
     L2SetMeta *l2_metas = cpu->l2_metas;
-    L2SetData *l2_datas = cpu->l2_datas;
     L2SetMeta *l2_meta = &cpu->l2_metas[l2_index];
     L2SetData *l2_data = &cpu->l2_datas[l2_index];
 
@@ -467,7 +465,7 @@ void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
         }
 
         uint8_t l1_victim =
-            l1i_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+            l1i_evict(l1_meta, l1_index, l2_metas, core_id);
 
         std::memcpy(cache_line, l2_data->data[l2_hit_way], LINE_SIZE);
         plru_update<uint16_t, NUM_L2_WAYS>(&l2_meta->plru_bits, l2_hit_way);
@@ -476,8 +474,8 @@ void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
         uint8_t d_sharers = l2_meta->core_valid_d[l2_hit_way] & ~(1 << core_id);
         uint8_t i_sharers = l2_meta->core_valid_i[l2_hit_way] & ~(1 << core_id);
         if (d_sharers | i_sharers) {
-            snoop_downgrade_peers(cores, d_sharers, l1_index, l1_tag, cache_line,
-                                  l2_meta, l2_data, l2_hit_way);
+            snoop_downgrade_peers(cores, d_sharers, l1_index, l1_tag,
+                                  cache_line, l2_meta, l2_data, l2_hit_way);
         }
 
         l1_cache_fill(l1_meta, l1_data, l1_tag, l1_victim, cache_line,
@@ -492,7 +490,7 @@ void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
 
     uint8_t l2_victim = l2_evict(cores, l2_meta, l2_data, l2_index);
     uint8_t l1_victim =
-        l1i_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+        l1i_evict(l1_meta, l1_index, l2_metas, core_id);
 
     l2_cache_fill(l2_meta, l2_data, core_id, l2_tag, l2_victim, cache_line,
                   MESIState::EXCLUSIVE, &l2_meta->core_valid_i[l2_victim],
