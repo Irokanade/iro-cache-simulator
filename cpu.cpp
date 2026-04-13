@@ -434,4 +434,70 @@ void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
 void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
                uint8_t data_size)
 {
+    Core *cores = cpu->cores;
+    Core *core = &cpu->cores[core_id];
+
+    uint16_t l1_index = l1_to_index(address);
+    uint64_t l1_tag = l1_to_tag(address);
+    uint8_t offset = l1_to_offset(address);
+    L1SetMeta *l1_meta = &core->l1i_metas[l1_index];
+    L1SetData *l1_data = &core->l1i_datas[l1_index];
+
+    uint16_t l2_index = l2_to_index(address);
+    uint64_t l2_tag = l2_to_tag(address);
+    L2SetMeta *l2_metas = cpu->l2_metas;
+    L2SetData *l2_datas = cpu->l2_datas;
+    L2SetMeta *l2_meta = &cpu->l2_metas[l2_index];
+    L2SetData *l2_data = &cpu->l2_datas[l2_index];
+
+    uint8_t l1_hit_way;
+    if (l1_find_way(l1_meta, l1_tag, &l1_hit_way)) {
+        std::memcpy(data, l1_data->data[l1_hit_way] + offset, data_size);
+        plru_update<uint8_t, NUM_L1_WAYS>(&l1_meta->plru_bits, l1_hit_way);
+        return;
+    }
+
+    core->perf_counters.l1i_misses++;
+
+    uint8_t cache_line[LINE_SIZE];
+    uint8_t l2_hit_way;
+    if (l2_find_way(l2_meta, l2_tag, &l2_hit_way)) {
+        if (l2_meta->state[l2_hit_way] == MESIState::MODIFIED) {
+            std::abort();
+        }
+
+        uint8_t l1_victim =
+            l1i_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+
+        std::memcpy(cache_line, l2_data->data[l2_hit_way], LINE_SIZE);
+        plru_update<uint16_t, NUM_L2_WAYS>(&l2_meta->plru_bits, l2_hit_way);
+        l2_meta->core_valid_i[l2_hit_way] |= static_cast<uint8_t>(1 << core_id);
+
+        uint8_t d_sharers = l2_meta->core_valid_d[l2_hit_way] & ~(1 << core_id);
+        uint8_t i_sharers = l2_meta->core_valid_i[l2_hit_way] & ~(1 << core_id);
+        if (d_sharers | i_sharers) {
+            snoop_downgrade_peers(cores, d_sharers, l1_index, l1_tag, cache_line,
+                                  l2_meta, l2_data, l2_hit_way);
+        }
+
+        l1_cache_fill(l1_meta, l1_data, l1_tag, l1_victim, cache_line,
+                      MESIState::SHARED);
+        std::memcpy(data, cache_line + offset, data_size);
+        return;
+    }
+
+    core->perf_counters.l2_misses++;
+
+    std::memset(cache_line, 0, LINE_SIZE);
+
+    uint8_t l2_victim = l2_evict(cores, l2_meta, l2_data, l2_index);
+    uint8_t l1_victim =
+        l1i_evict(l1_meta, l1_data, l1_index, l2_metas, l2_datas, core_id);
+
+    l2_cache_fill(l2_meta, l2_data, core_id, l2_tag, l2_victim, cache_line,
+                  MESIState::EXCLUSIVE, &l2_meta->core_valid_i[l2_victim],
+                  &l2_meta->core_valid_d[l2_victim]);
+    l1_cache_fill(l1_meta, l1_data, l1_tag, l1_victim, cache_line,
+                  MESIState::SHARED);
+    std::memcpy(data, cache_line + offset, data_size);
 }
