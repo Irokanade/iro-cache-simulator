@@ -98,11 +98,6 @@ struct CPU {
     L2SetData l2_datas[L2_SETS];
 };
 
-struct MainMemory {
-    uint8_t *data;
-    uint64_t size;
-};
-
 void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
               uint8_t data_size);
 void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
