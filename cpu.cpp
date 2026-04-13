@@ -79,10 +79,10 @@ static void l2_clear_core_valid_way(uint8_t *core_valid, uint8_t core_id)
 
 static void snoop_downgrade_peers(Core *cores, uint8_t sharers,
                                   uint16_t l1_index, uint64_t l1_tag,
-                                  uint8_t *cache_line, L2SetMeta *l2set_meta,
-                                  L2SetData *l2set_data, uint8_t l2_way)
+                                  uint8_t *cache_line, L2SetMeta *l2_meta,
+                                  L2SetData *l2_data, uint8_t l2_way)
 {
-    l2set_meta->state[l2_way] = MESIState::SHARED;
+    l2_meta->state[l2_way] = MESIState::SHARED;
 
     while (sharers) {
         uint8_t c = static_cast<uint8_t>(std::countr_zero(sharers));
@@ -94,7 +94,7 @@ static void snoop_downgrade_peers(Core *cores, uint8_t sharers,
         if (l1_find_way(peer_meta, l1_tag, &w)) {
             if (peer_meta->state[w] == MESIState::MODIFIED) {
                 std::memcpy(cache_line, peer_data->data[w], LINE_SIZE);
-                std::memcpy(l2set_data->data[l2_way], peer_data->data[w],
+                std::memcpy(l2_data->data[l2_way], peer_data->data[w],
                             LINE_SIZE);
             }
             peer_meta->state[w] = MESIState::SHARED;
@@ -104,7 +104,7 @@ static void snoop_downgrade_peers(Core *cores, uint8_t sharers,
 
 static void snoop_invalidate_peers(Core *cores, uint8_t sharers,
                                    uint16_t l1_index, uint64_t l1_tag,
-                                   uint8_t *cache_line, L2SetMeta *l2set_meta,
+                                   uint8_t *cache_line, L2SetMeta *l2_meta,
                                    uint8_t l2_way)
 {
     while (sharers) {
@@ -120,7 +120,7 @@ static void snoop_invalidate_peers(Core *cores, uint8_t sharers,
             }
             peer_meta->state[w] = MESIState::INVALID;
         }
-        l2set_meta->core_valid_d[l2_way] &= static_cast<uint8_t>(~(1 << c));
+        l2_meta->core_valid_d[l2_way] &= static_cast<uint8_t>(~(1 << c));
     }
 }
 
@@ -140,8 +140,8 @@ static void snoop_invalidate_peers_i(Core *cores, uint8_t sharers,
 }
 
 static uint8_t l1d_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
-                         uint16_t l1_index, L2SetMeta l2_metas[],
-                         L2SetData l2_datas[], uint8_t core_id)
+                         uint16_t l1_index, L2SetMeta *l2_metas,
+                         L2SetData *l2_datas, uint8_t core_id)
 {
     for (uint8_t i = 0; i < NUM_L1_WAYS; i++) {
         if (l1_meta->state[i] == MESIState::INVALID) {
@@ -179,8 +179,8 @@ static uint8_t l1d_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
 }
 
 static uint8_t l1i_evict(L1SetMeta *l1_meta, L1SetData *l1_data,
-                         uint16_t l1_index, L2SetMeta l2_metas[],
-                         L2SetData l2_datas[], uint8_t core_id)
+                         uint16_t l1_index, L2SetMeta *l2_metas,
+                         L2SetData *l2_datas, uint8_t core_id)
 {
     for (uint8_t i = 0; i < NUM_L1_WAYS; i++) {
         if (l1_meta->state[i] == MESIState::INVALID) {
