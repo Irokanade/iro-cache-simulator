@@ -87,7 +87,6 @@ struct Core {
     L1SetMeta l1i_metas[L1_SETS];
     L1SetData l1i_datas[L1_SETS];
     PerfCounters perf_counters;
-    uint8_t core_id;
 };
 
 constexpr uint8_t NUM_CORES = 2;
