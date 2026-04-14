@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-enum Operand : uint8_t { READ, WRITE, FETCH };
+enum Operation : uint8_t { READ, WRITE, FETCH };
 
 struct L1Snapshot {
     uint64_t tag[NUM_L1_WAYS];
@@ -22,10 +22,10 @@ struct L2Snapshot {
 };
 
 struct TraceEntry {
-    Operand op;
+    Operation op;
     uint8_t core_id;
     uint64_t address;
-    L1Snapshot l1;
+    L1Snapshot l1[NUM_CORES];
     L2Snapshot l2;
 };
 
@@ -41,5 +41,6 @@ void cache_debugger_write(CacheDebugger *cd, uint8_t core_id, uint64_t address,
                           uint8_t *data, uint8_t size);
 void cache_debugger_fetch(CacheDebugger *cd, uint8_t core_id, uint64_t address,
                           uint8_t *data, uint8_t size);
+void cache_debugger_dump_binary(const CacheDebugger *cd, const char *path);
 
 #endif // CACHE_DEBUGGER_H

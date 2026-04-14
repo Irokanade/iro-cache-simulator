@@ -1,4 +1,5 @@
 #include "cache_debugger.h"
+#include <cstdio>
 
 static void l1d_take_snapshot(CPU *cpu, uint8_t core_id, uint16_t l1_set_index,
                               L1Snapshot *snapshot)
@@ -35,7 +36,7 @@ static void l2_take_snapshot(CPU *cpu, uint16_t l2_set_index,
     }
 }
 
-template <Operand OP>
+template <Operation OP>
 static void record_trace(CacheDebugger *cd, uint8_t core_id, uint64_t address,
                          uint8_t *data, uint8_t size)
 {
@@ -55,10 +56,12 @@ static void record_trace(CacheDebugger *cd, uint8_t core_id, uint64_t address,
         cpu_fetch(cd->cpu, core_id, address, data, size);
     }
 
-    if constexpr (OP == FETCH) {
-        l1i_take_snapshot(cd->cpu, core_id, l1_set, &e.l1);
-    } else {
-        l1d_take_snapshot(cd->cpu, core_id, l1_set, &e.l1);
+    for (uint8_t c = 0; c < NUM_CORES; c++) {
+        if constexpr (OP == FETCH) {
+            l1i_take_snapshot(cd->cpu, c, l1_set, &e.l1[c]);
+        } else {
+            l1d_take_snapshot(cd->cpu, c, l1_set, &e.l1[c]);
+        }
     }
     l2_take_snapshot(cd->cpu, l2_set, &e.l2);
 
@@ -87,4 +90,19 @@ void cache_debugger_fetch(CacheDebugger *cd, uint8_t core_id, uint64_t address,
                           uint8_t *data, uint8_t size)
 {
     record_trace<FETCH>(cd, core_id, address, data, size);
+}
+
+void cache_debugger_dump_binary(const CacheDebugger *cd, const char *path)
+{
+    FILE *f = std::fopen(path, "wb");
+    if (!f) {
+        std::fprintf(stderr, "cache_debugger: failed to open '%s'\n", path);
+        std::abort();
+    }
+
+    uint64_t count = cd->trace.size();
+    std::fwrite(&count, sizeof(count), 1, f);
+    std::fwrite(cd->trace.data(), sizeof(TraceEntry), count, f);
+
+    std::fclose(f);
 }
