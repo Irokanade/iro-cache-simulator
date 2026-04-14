@@ -1,5 +1,7 @@
-#include "cache_debugger.h"
 #include <cstdio>
+#include <cstdlib>
+
+#include "cache_debugger.h"
 
 static void l1d_take_snapshot(CPU *cpu, uint8_t core_id, uint16_t l1_set_index,
                               L1Snapshot *snapshot)

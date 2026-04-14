@@ -1,7 +1,7 @@
 CXX = g++-15
 CXXFLAGS = -std=c++20 -O2 -Wall -Wextra
 
-OBJS = cpu.o main.o
+OBJS = cpu.o cache_debugger.o main.o
 
 all: main
 
