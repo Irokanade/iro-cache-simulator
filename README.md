@@ -1,5 +1,6 @@
 # iro-cache-simulator
-A cache simulator demonstrating how memory access patterns affect cache performance.
+A cache simulator of intel i7 Intel Haswell CPU (2013) demonstrating how memory access patterns affect cache performance.
+
 
 ## CPU Design
 - **2 cores**, each with independent L1 data and instruction caches
@@ -29,3 +30,6 @@ make
 ./main
 ```
 
+## References
+https://www.cs.cmu.edu/afs/cs/academic/class/15418-s19/www/lectures/12_snoopimpl.pdf
+https://www.cs.cmu.edu/afs/cs/academic/class/15418-f24/www/lectures/10_cachecoherence.pdf
