@@ -1,5 +1,4 @@
 #include "cpu.h"
-#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -45,7 +44,7 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address) {}
 static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address) {}
 
 static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
-                           uint8_t *data, size_t data_size)
+                           uint8_t *data, uint8_t data_size)
 {
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
@@ -77,7 +76,7 @@ static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
 }
 
 static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
-                            uint8_t *data, size_t data_size)
+                            uint8_t *data, uint8_t data_size)
 {
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);

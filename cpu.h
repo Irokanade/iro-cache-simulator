@@ -60,29 +60,29 @@ enum MESIState : uint8_t {
 };
 
 constexpr uint8_t NUM_L1_WAYS = 8;
-struct L1SetMeta {
+struct alignas(64) L1SetMeta {
     uint64_t tag[NUM_L1_WAYS];
     MESIState state[NUM_L1_WAYS];
     uint8_t plru_bits;
 };
 
-struct L1SetData {
+struct alignas(64) L1SetData {
     uint8_t data[NUM_L1_WAYS][LINE_SIZE];
 };
 
 constexpr uint8_t NUM_L2_WAYS = 8;
-struct L2SetMeta {
+struct alignas(64) L2SetMeta {
     uint64_t tag[NUM_L2_WAYS];
     MESIState state[NUM_L2_WAYS];
     uint8_t plru_bits;
 };
 
-struct L2SetData {
+struct alignas(64) L2SetData {
     uint8_t data[NUM_L2_WAYS][LINE_SIZE];
 };
 
 constexpr uint8_t NUM_L3_WAYS = 16;
-struct L3SetMeta {
+struct alignas(64) L3SetMeta {
     uint64_t tag[NUM_L3_WAYS];
     MESIState state[NUM_L3_WAYS];
     uint8_t core_valid_d[NUM_L3_WAYS];
@@ -90,7 +90,7 @@ struct L3SetMeta {
     uint16_t plru_bits;
 };
 
-struct L3SetData {
+struct alignas(64) L3SetData {
     uint8_t data[NUM_L3_WAYS][LINE_SIZE];
 };
 
