@@ -1,5 +1,5 @@
 CXX = g++-15
-CXXFLAGS = -std=c++20 -O2 -Wall -Wextra -MMD -MP
+CXXFLAGS = -std=c++23 -O2 -Wall -Wextra -Wconversion -MMD -MP
 
 OBJS = cpu.o main.o
 DEPS = $(OBJS:.o=.d)

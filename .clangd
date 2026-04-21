@@ -1,5 +1,6 @@
 CompileFlags:
   CompilationDatabase: build
+  Add: [-Wconversion, -std=c++23]
 
 Diagnostics:
   ClangTidy:
