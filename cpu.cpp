@@ -10,8 +10,9 @@ static void plru_update(T *plru_bits, uint8_t way)
     uint8_t node = (WAYS - 1) + way;
     while (node > 0) {
         uint8_t parent = (node - 1) / 2;
-        T mask = 1 << parent;
-        *plru_bits = (*plru_bits & ~mask) | ((node & 1) << parent);
+        T mask = static_cast<T>(1 << parent);
+        *plru_bits =
+            static_cast<T>((*plru_bits & ~mask) | ((node & 1) << parent));
         node = parent;
     }
 }
