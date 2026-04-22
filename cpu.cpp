@@ -385,7 +385,92 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
                                uint8_t *data, uint8_t data_size,
                                uint8_t *memory)
 {
+    uint16_t l3_set_index = l3_to_index(address);
+    uint64_t l3_set_tag = l3_to_tag(address);
+
+    L3SetMeta *l3_set_meta = &cpu->l3_metas[l3_set_index];
+    L3SetData *l3_set_data = &cpu->l3_datas[l3_set_index];
+
+    uint8_t l3_set_way;
+    if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
+        for (uint8_t i = 0; i < NUM_CORES; i++) {
+            if (i == core_id) {
+                continue;
+            }
+
+            Core *core = &cpu->cores[i];
+            uint16_t l1_set_index = l1_to_index(address);
+            uint64_t l1_set_tag = l1_to_tag(address);
+            L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
+            L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
+
+            uint8_t l1_way;
+            if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
+                switch (l1_set_meta->state[l1_way]) {
+                case MESIState::MODIFIED:
+                    std::memcpy(l3_set_data->data[l3_set_way],
+                                l1_set_data->data[l1_way], LINE_SIZE);
+                    l3_set_meta->state[l3_set_way] = MESIState::MODIFIED;
+                    l1_set_meta->state[l1_way] = MESIState::INVALID;
+                    break;
+                case MESIState::EXCLUSIVE:
+                case MESIState::SHARED:
+                    l1_set_meta->state[l1_way] = MESIState::INVALID;
+                    break;
+                case MESIState::INVALID:
+                    std::unreachable();
+                }
+            }
+        }
+
+        Core *req_core = &cpu->cores[core_id];
+        uint16_t l2_set_index = l2_to_index(address);
+        uint64_t l2_set_tag = l2_to_tag(address);
+        uint16_t l1_set_index = l1_to_index(address);
+        uint64_t l1_set_tag = l1_to_tag(address);
+
+        uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+        l2_fill(req_core, l2_set_index, l2_set_tag, l2_way,
+                l3_set_data->data[l3_set_way], MESIState::MODIFIED);
+
+        uint8_t l1_way = l1d_evict(req_core, l1_set_index);
+        l1d_fill(req_core, l1_set_index, l1_set_tag, l1_way,
+                 l3_set_data->data[l3_set_way], MESIState::MODIFIED);
+
+        plru_update<uint16_t, NUM_L3_WAYS>(&l3_set_meta->plru_bits, l3_set_way);
+        l3_set_meta->core_valid_d[l3_set_way] =
+            static_cast<uint8_t>(1 << core_id);
+
+        std::memcpy(data, l3_set_data->data[l3_set_way] + l1_to_offset(address),
+                    data_size);
+        return;
+    }
+
+    // l3 miss
+    uint8_t cache_line[LINE_SIZE];
+    std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
+
+    uint8_t l3_way = l3_evict(cpu, l3_set_index, memory);
+    l3_fill(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
+            MESIState::MODIFIED, core_id);
+
+    Core *req_core = &cpu->cores[core_id];
+    uint16_t l2_set_index = l2_to_index(address);
+    uint64_t l2_set_tag = l2_to_tag(address);
+    uint16_t l1_set_index = l1_to_index(address);
+    uint64_t l1_set_tag = l1_to_tag(address);
+
+    uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+    l2_fill(req_core, l2_set_index, l2_set_tag, l2_way, cache_line,
+            MESIState::MODIFIED);
+
+    uint8_t l1_way = l1d_evict(req_core, l1_set_index);
+    l1d_fill(req_core, l1_set_index, l1_set_tag, l1_way, cache_line,
+             MESIState::MODIFIED);
+
+    std::memcpy(data, cache_line + l1_to_offset(address), data_size);
 }
+
 static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address,
                         uint8_t *memory)
 {
