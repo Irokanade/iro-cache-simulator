@@ -1,0 +1,7 @@
+# MacOS
+.DS_Store
+
+# Object files
+*.o
+*.d
+main
