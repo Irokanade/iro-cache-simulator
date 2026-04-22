@@ -123,10 +123,10 @@ struct CPU {
 };
 
 void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
-              uint8_t data_size);
+              uint8_t data_size, uint8_t *memory);
 void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
-               uint8_t data_size);
+               uint8_t data_size, uint8_t *memory);
 void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
-               uint8_t data_size);
+               uint8_t data_size, uint8_t *memory);
 
 #endif // CPU_H
