@@ -51,6 +51,18 @@ static bool l2_find_way(const L2SetMeta *meta, uint64_t tag, uint8_t *way)
     return false;
 }
 
+static bool l3_find_way(const L3SetMeta *meta, uint64_t tag, uint8_t *way)
+{
+    for (uint8_t i = 0; i < NUM_L3_WAYS; i++) {
+        if (meta->tag[i] == tag && meta->state[i] != INVALID) {
+            *way = i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static uint8_t l1d_evict(Core *core, uint16_t l1_index)
 {
     L1SetMeta *l1_set_meta = &core->l1d_metas[l1_index];
@@ -87,7 +99,69 @@ static uint8_t l1d_evict(Core *core, uint16_t l1_index)
     return victim;
 }
 
-static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index);
+static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index)
+{
+    Core *core = &cpu->cores[core_id];
+    L2SetMeta *l2_set_meta = &core->l2_metas[l2_index];
+    L2SetData *l2_set_data = &core->l2_datas[l2_index];
+
+    // find an invalid way
+    for (uint8_t i = 0; i < NUM_L2_WAYS; i++) {
+        if (l2_set_meta->state[i] == MESIState::INVALID) {
+            return i;
+        }
+    }
+
+    // no invalid ways find victim
+    uint8_t victim = plru_victim<uint8_t, NUM_L2_WAYS>(l2_set_meta->plru_bits);
+
+    // back-invalidate L1
+    uint64_t victim_addr = l2_to_addr(l2_set_meta->tag[victim], l2_index);
+    uint16_t l1_index = l1_to_index(victim_addr);
+    uint64_t l1_tag = l1_to_tag(victim_addr);
+    L1SetMeta *l1_meta = &core->l1d_metas[l1_index];
+    L1SetData *l1_data = &core->l1d_datas[l1_index];
+
+    // back-invalidate L1D
+    uint8_t l1_way;
+    if (l1_find_way(l1_meta, l1_tag, &l1_way)) {
+        if (l1_meta->state[l1_way] == MESIState::MODIFIED) {
+            std::memcpy(l2_set_data->data[victim], l1_data->data[l1_way],
+                        LINE_SIZE);
+            l2_set_meta->state[victim] = MESIState::MODIFIED;
+        }
+        l1_meta->state[l1_way] = MESIState::INVALID;
+    }
+
+    // back-invalidate L1I
+    L1SetMeta *l1i_meta = &core->l1i_metas[l1_index];
+    uint8_t l1i_way;
+    if (l1_find_way(l1i_meta, l1_tag, &l1i_way)) {
+        l1i_meta->state[l1i_way] = MESIState::INVALID;
+    }
+
+    // writeback to L3 if dirty
+    if (l2_set_meta->state[victim] == MESIState::MODIFIED) {
+        uint16_t l3_index = l3_to_index(victim_addr);
+        uint64_t l3_tag = l3_to_tag(victim_addr);
+
+        L3SetMeta *l3_meta = &cpu->l3_metas[l3_index];
+        L3SetData *l3_data = &cpu->l3_datas[l3_index];
+
+        uint8_t l3_way;
+        if (l3_find_way(l3_meta, l3_tag, &l3_way)) {
+            std::memcpy(l3_data->data[l3_way], l2_set_data->data[victim],
+                        LINE_SIZE);
+            l3_meta->state[l3_way] = MESIState::MODIFIED;
+        } else {
+            std::unreachable();
+        }
+    }
+
+    l2_set_meta->state[victim] = MESIState::INVALID;
+    return victim;
+}
+
 static uint8_t l3_evict(CPU *cpu, uint16_t l3_index);
 
 static void flush() {}
