@@ -1,5 +1,5 @@
 # iro-cache-simulator
-A cache simulator of intel i7 Intel Haswell CPU (2013) demonstrating how memory access patterns affect cache performance.
+A cache simulator of Intel i7 Haswell CPU (2013) demonstrating how memory access patterns affect cache performance.
 
 
 ## CPU Design
