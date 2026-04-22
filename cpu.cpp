@@ -105,6 +105,9 @@ static void l2_fill(Core *core, uint16_t l2_index, uint64_t l2_tag, uint8_t way,
     plru_update<uint8_t, NUM_L2_WAYS>(&meta->plru_bits, way);
 }
 
+enum class CacheType : uint8_t { Data, Instruction };
+
+template <CacheType TYPE>
 static void l3_fill(CPU *cpu, uint16_t l3_index, uint64_t l3_tag, uint8_t way,
                     uint8_t *line, MESIState state, uint8_t core_id)
 {
@@ -113,8 +116,14 @@ static void l3_fill(CPU *cpu, uint16_t l3_index, uint64_t l3_tag, uint8_t way,
 
     meta->tag[way] = l3_tag;
     meta->state[way] = state;
-    meta->core_valid_d[way] = static_cast<uint8_t>(1 << core_id);
-    meta->core_valid_i[way] = 0;
+    uint8_t core_bit = static_cast<uint8_t>(1 << core_id);
+    if constexpr (TYPE == CacheType::Instruction) {
+        meta->core_valid_d[way] = 0;
+        meta->core_valid_i[way] = core_bit;
+    } else {
+        meta->core_valid_d[way] = core_bit;
+        meta->core_valid_i[way] = 0;
+    }
     std::memcpy(data->data[way], line, LINE_SIZE);
     plru_update<uint16_t, NUM_L3_WAYS>(&meta->plru_bits, way);
 }
@@ -375,8 +384,8 @@ static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
     uint8_t l3_way = l3_evict(cpu, l3_set_index, memory);
-    l3_fill(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
-            MESIState::EXCLUSIVE, core_id);
+    l3_fill<CacheType::Data>(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
+                             MESIState::EXCLUSIVE, core_id);
 
     Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
@@ -470,8 +479,8 @@ static void bus_read_instruction(CPU *cpu, uint8_t core_id, uint64_t address,
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
     uint8_t l3_way = l3_evict(cpu, l3_set_index, memory);
-    l3_fill(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
-            MESIState::EXCLUSIVE, core_id);
+    l3_fill<CacheType::Instruction>(cpu, l3_set_index, l3_set_tag, l3_way,
+                                    cache_line, MESIState::EXCLUSIVE, core_id);
 
     Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
@@ -550,8 +559,9 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
         l3_set_meta->core_valid_d[l3_set_way] =
             static_cast<uint8_t>(1 << core_id);
 
-        std::memcpy(data, l3_set_data->data[l3_set_way] + l1_to_offset(address),
-                    data_size);
+        std::memcpy(req_core->l1d_datas[l1_set_index].data[l1_way] +
+                        l1_to_offset(address),
+                    data, data_size);
         return;
     }
 
@@ -560,8 +570,8 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
     uint8_t l3_way = l3_evict(cpu, l3_set_index, memory);
-    l3_fill(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
-            MESIState::MODIFIED, core_id);
+    l3_fill<CacheType::Data>(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
+                             MESIState::MODIFIED, core_id);
 
     Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
@@ -577,7 +587,9 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     l1d_fill(req_core, l1_set_index, l1_set_tag, l1_way, cache_line,
              MESIState::MODIFIED);
 
-    std::memcpy(data, cache_line + l1_to_offset(address), data_size);
+    std::memcpy(req_core->l1d_datas[l1_set_index].data[l1_way] +
+                    l1_to_offset(address),
+                data, data_size);
 }
 
 static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address)
