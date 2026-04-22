@@ -3,5 +3,7 @@ CompileFlags:
   Add: [-Wconversion, -std=c++23]
 
 Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict 
   ClangTidy:
     Add: ["cppcoreguidelines-pro-type-cstyle-cast"]
