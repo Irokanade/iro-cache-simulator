@@ -1,6 +1,5 @@
 #include "cpu.h"
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -221,7 +220,7 @@ static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index)
     // no invalid ways find victim
     uint8_t victim = plru_victim<uint8_t, NUM_L2_WAYS>(l2_set_meta->plru_bits);
 
-    // back-invalidate L1
+    // back-invalidate L1D and L1I
     uint64_t victim_addr = l2_to_addr(l2_set_meta->tag[victim], l2_index);
     uint16_t l1_index = l1_to_index(victim_addr);
     uint64_t l1_tag = l1_to_tag(victim_addr);
@@ -241,8 +240,25 @@ static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index)
         if (l3_find_way(l3_meta, l3_tag, &l3_way)) {
             flush(l3_data->data[l3_way], l2_set_data->data[victim],
                   &l3_meta->state[l3_way]);
+            l3_meta->core_valid_d[l3_way] &=
+                static_cast<uint8_t>(~(1 << core_id));
+            l3_meta->core_valid_i[l3_way] &=
+                static_cast<uint8_t>(~(1 << core_id));
         } else {
             std::unreachable();
+        }
+    } else {
+        uint16_t l3_index = l3_to_index(victim_addr);
+        uint64_t l3_tag = l3_to_tag(victim_addr);
+
+        L3SetMeta *l3_meta = &cpu->l3_metas[l3_index];
+
+        uint8_t l3_way;
+        if (l3_find_way(l3_meta, l3_tag, &l3_way)) {
+            l3_meta->core_valid_d[l3_way] &=
+                static_cast<uint8_t>(~(1 << core_id));
+            l3_meta->core_valid_i[l3_way] &=
+                static_cast<uint8_t>(~(1 << core_id));
         }
     }
 
@@ -269,13 +285,12 @@ static uint8_t l3_evict(CPU *cpu, uint16_t l3_index, uint8_t *memory)
     uint16_t l1_set_index = l1_to_index(victim_addr);
     uint64_t l1_set_tag = l1_to_tag(victim_addr);
 
-    for (uint8_t i = 0; i < NUM_CORES; i++) {
+        for (uint8_t i = 0; i < NUM_CORES; i++) {
         Core *core = &cpu->cores[i];
+        L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
+        L2SetData *l2_data = &core->l2_datas[l2_set_index];
 
         if (l3_set_meta->core_valid_d[victim] & (1 << i)) {
-            L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
-            L2SetData *l2_data = &core->l2_datas[l2_set_index];
-
             uint8_t l2_way;
             if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
                 l1d_back_invalidate(core, l1_set_index, l1_set_tag,
@@ -292,11 +307,15 @@ static uint8_t l3_evict(CPU *cpu, uint16_t l3_index, uint8_t *memory)
 
         if (l3_set_meta->core_valid_i[victim] & (1 << i)) {
             l1i_back_invalidate(core, l1_set_index, l1_set_tag);
+
+            uint8_t l2_way;
+            if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
+                l2_meta->state[l2_way] = MESIState::INVALID;
+            }
         }
     }
 
     if (l3_set_meta->state[victim] == MESIState::MODIFIED) {
-        uint64_t victim_addr = l3_to_addr(l3_set_meta->tag[victim], l3_index);
         std::memcpy(&memory[to_line_base(victim_addr)],
                     l3_set_data->data[victim], LINE_SIZE);
     }
@@ -307,9 +326,108 @@ static uint8_t l3_evict(CPU *cpu, uint16_t l3_index, uint8_t *memory)
     return victim;
 }
 
+static void snoop_downgrade_peers(CPU *cpu, uint8_t core_id, uint64_t address,
+                           L3SetMeta *l3_set_meta, L3SetData *l3_set_data,
+                           uint8_t l3_set_way, bool *shared)
+{
+    uint16_t l1_set_index = l1_to_index(address);
+    uint64_t l1_set_tag = l1_to_tag(address);
+    uint16_t l2_set_index = l2_to_index(address);
+    uint64_t l2_set_tag = l2_to_tag(address);
+
+    uint8_t other_d = l3_set_meta->core_valid_d[l3_set_way] &
+                      static_cast<uint8_t>(~(1 << core_id));
+    uint8_t other_i = l3_set_meta->core_valid_i[l3_set_way] &
+                      static_cast<uint8_t>(~(1 << core_id));
+    *shared = (other_d | other_i) != 0;
+
+    for (uint8_t i = 0; i < NUM_CORES; i++) {
+        if (i == core_id) {
+            continue;
+        }
+        if (!(other_d & (1 << i))) {
+            continue;
+        }
+
+        Core *core = &cpu->cores[i];
+
+        L1SetMeta *l1_meta = &core->l1d_metas[l1_set_index];
+        L1SetData *l1_data = &core->l1d_datas[l1_set_index];
+
+        uint8_t l1_way;
+        if (l1_find_way(l1_meta, l1_set_tag, &l1_way)) {
+            if (l1_meta->state[l1_way] == MESIState::MODIFIED) {
+                flush(l3_set_data->data[l3_set_way], l1_data->data[l1_way],
+                      &l3_set_meta->state[l3_set_way]);
+            }
+            l1_meta->state[l1_way] = MESIState::SHARED;
+        } else {
+            L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
+            L2SetData *l2_data = &core->l2_datas[l2_set_index];
+
+            uint8_t l2_way;
+            if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
+                if (l2_meta->state[l2_way] == MESIState::MODIFIED) {
+                    flush(l3_set_data->data[l3_set_way], l2_data->data[l2_way],
+                          &l3_set_meta->state[l3_set_way]);
+                }
+                l2_meta->state[l2_way] = MESIState::SHARED;
+            }
+        }
+    }
+}
+
+static void snoop_invalidate_peers(CPU *cpu, uint8_t core_id, uint64_t address,
+                            L3SetMeta *l3_set_meta, L3SetData *l3_set_data,
+                            uint8_t l3_set_way)
+{
+    uint16_t l1_set_index = l1_to_index(address);
+    uint64_t l1_set_tag = l1_to_tag(address);
+    uint16_t l2_set_index = l2_to_index(address);
+    uint64_t l2_set_tag = l2_to_tag(address);
+
+    for (uint8_t i = 0; i < NUM_CORES; i++) {
+        if (i == core_id) {
+            continue;
+        }
+
+        Core *core = &cpu->cores[i];
+
+        L1SetMeta *l1_meta = &core->l1d_metas[l1_set_index];
+        L1SetData *l1_data = &core->l1d_datas[l1_set_index];
+
+        uint8_t l1_way;
+        if (l1_find_way(l1_meta, l1_set_tag, &l1_way)) {
+            if (l1_meta->state[l1_way] == MESIState::MODIFIED) {
+                flush(l3_set_data->data[l3_set_way], l1_data->data[l1_way],
+                      &l3_set_meta->state[l3_set_way]);
+            }
+            l1_meta->state[l1_way] = MESIState::INVALID;
+        }
+
+        L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
+        L2SetData *l2_data = &core->l2_datas[l2_set_index];
+
+        uint8_t l2_way;
+        if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
+            if (l2_meta->state[l2_way] == MESIState::MODIFIED) {
+                flush(l3_set_data->data[l3_set_way], l2_data->data[l2_way],
+                      &l3_set_meta->state[l3_set_way]);
+            }
+            l2_meta->state[l2_way] = MESIState::INVALID;
+        }
+
+        l1i_back_invalidate(core, l1_set_index, l1_set_tag);
+    }
+
+    l3_set_meta->core_valid_d[l3_set_way] = static_cast<uint8_t>(1 << core_id);
+    l3_set_meta->core_valid_i[l3_set_way] = 0;
+}
+
 static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
                           uint8_t *data, uint8_t data_size, uint8_t *memory)
 {
+    Core *req_core = &cpu->cores[core_id];
     uint16_t l3_set_index = l3_to_index(address);
     uint64_t l3_set_tag = l3_to_tag(address);
 
@@ -318,45 +436,13 @@ static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
 
     uint8_t l3_set_way;
     if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
-        bool shared = false;
-
-        for (uint8_t i = 0; i < NUM_CORES; i++) {
-            if (i == core_id) {
-                continue;
-            }
-
-            Core *core = &cpu->cores[i];
-            uint16_t l1_set_index = l1_to_index(address);
-            uint64_t l1_set_tag = l1_to_tag(address);
-            L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
-            L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
-
-            uint8_t l1_way;
-            if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
-                shared = true;
-
-                switch (l1_set_meta->state[l1_way]) {
-                case MESIState::MODIFIED:
-                    flush(l3_set_data->data[l3_set_way],
-                          l1_set_data->data[l1_way],
-                          &l3_set_meta->state[l3_set_way]);
-                    l1_set_meta->state[l1_way] = MESIState::SHARED;
-                    break;
-                case MESIState::EXCLUSIVE:
-                    l1_set_meta->state[l1_way] = MESIState::SHARED;
-                    break;
-                case MESIState::SHARED:
-                    break;
-                case MESIState::INVALID:
-                    std::unreachable();
-                }
-            }
-        }
+        bool shared;
+        snoop_downgrade_peers(cpu, core_id, address, l3_set_meta, l3_set_data,
+                       l3_set_way, &shared);
 
         MESIState fill_state =
             shared ? MESIState::SHARED : MESIState::EXCLUSIVE;
 
-        Core *req_core = &cpu->cores[core_id];
         uint16_t l2_set_index = l2_to_index(address);
         uint64_t l2_set_tag = l2_to_tag(address);
         uint16_t l1_set_index = l1_to_index(address);
@@ -380,6 +466,8 @@ static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
     }
 
     // l3 miss
+    req_core->perf_counters.l3_misses++;
+
     uint8_t cache_line[LINE_SIZE];
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
@@ -387,7 +475,6 @@ static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
     l3_fill<CacheType::Data>(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
                              MESIState::EXCLUSIVE, core_id);
 
-    Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
     uint16_t l1_set_index = l1_to_index(address);
@@ -408,6 +495,7 @@ static void bus_read_instruction(CPU *cpu, uint8_t core_id, uint64_t address,
                                  uint8_t *data, uint8_t data_size,
                                  uint8_t *memory)
 {
+    Core *req_core = &cpu->cores[core_id];
     uint16_t l3_set_index = l3_to_index(address);
     uint64_t l3_set_tag = l3_to_tag(address);
 
@@ -416,42 +504,10 @@ static void bus_read_instruction(CPU *cpu, uint8_t core_id, uint64_t address,
 
     uint8_t l3_set_way;
     if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
-        bool shared = false;
+        bool shared;
+        snoop_downgrade_peers(cpu, core_id, address, l3_set_meta, l3_set_data,
+                       l3_set_way, &shared);
 
-        for (uint8_t i = 0; i < NUM_CORES; i++) {
-            if (i == core_id) {
-                continue;
-            }
-
-            Core *core = &cpu->cores[i];
-            uint16_t l1_set_index = l1_to_index(address);
-            uint64_t l1_set_tag = l1_to_tag(address);
-            L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
-            L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
-
-            uint8_t l1_way;
-            if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
-                shared = true;
-
-                switch (l1_set_meta->state[l1_way]) {
-                case MESIState::MODIFIED:
-                    flush(l3_set_data->data[l3_set_way],
-                          l1_set_data->data[l1_way],
-                          &l3_set_meta->state[l3_set_way]);
-                    l1_set_meta->state[l1_way] = MESIState::SHARED;
-                    break;
-                case MESIState::EXCLUSIVE:
-                    l1_set_meta->state[l1_way] = MESIState::SHARED;
-                    break;
-                case MESIState::SHARED:
-                    break;
-                case MESIState::INVALID:
-                    std::unreachable();
-                }
-            }
-        }
-
-        Core *req_core = &cpu->cores[core_id];
         uint16_t l2_set_index = l2_to_index(address);
         uint64_t l2_set_tag = l2_to_tag(address);
         uint16_t l1_set_index = l1_to_index(address);
@@ -475,6 +531,8 @@ static void bus_read_instruction(CPU *cpu, uint8_t core_id, uint64_t address,
     }
 
     // l3 miss
+    req_core->perf_counters.l3_misses++;
+
     uint8_t cache_line[LINE_SIZE];
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
@@ -482,7 +540,6 @@ static void bus_read_instruction(CPU *cpu, uint8_t core_id, uint64_t address,
     l3_fill<CacheType::Instruction>(cpu, l3_set_index, l3_set_tag, l3_way,
                                     cache_line, MESIState::EXCLUSIVE, core_id);
 
-    Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
     uint16_t l1_set_index = l1_to_index(address);
@@ -503,6 +560,7 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
                                uint8_t *data, uint8_t data_size,
                                uint8_t *memory)
 {
+    Core *req_core = &cpu->cores[core_id];
     uint16_t l3_set_index = l3_to_index(address);
     uint64_t l3_set_tag = l3_to_tag(address);
 
@@ -511,37 +569,9 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
 
     uint8_t l3_set_way;
     if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
-        for (uint8_t i = 0; i < NUM_CORES; i++) {
-            if (i == core_id) {
-                continue;
-            }
+        snoop_invalidate_peers(cpu, core_id, address, l3_set_meta, l3_set_data,
+                        l3_set_way);
 
-            Core *core = &cpu->cores[i];
-            uint16_t l1_set_index = l1_to_index(address);
-            uint64_t l1_set_tag = l1_to_tag(address);
-            L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
-            L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
-
-            uint8_t l1_way;
-            if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
-                switch (l1_set_meta->state[l1_way]) {
-                case MESIState::MODIFIED:
-                    flush(l3_set_data->data[l3_set_way],
-                          l1_set_data->data[l1_way],
-                          &l3_set_meta->state[l3_set_way]);
-                    l1_set_meta->state[l1_way] = MESIState::INVALID;
-                    break;
-                case MESIState::EXCLUSIVE:
-                case MESIState::SHARED:
-                    l1_set_meta->state[l1_way] = MESIState::INVALID;
-                    break;
-                case MESIState::INVALID:
-                    std::unreachable();
-                }
-            }
-        }
-
-        Core *req_core = &cpu->cores[core_id];
         uint16_t l2_set_index = l2_to_index(address);
         uint64_t l2_set_tag = l2_to_tag(address);
         uint16_t l1_set_index = l1_to_index(address);
@@ -556,8 +586,6 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
                  l3_set_data->data[l3_set_way], MESIState::MODIFIED);
 
         plru_update<uint16_t, NUM_L3_WAYS>(&l3_set_meta->plru_bits, l3_set_way);
-        l3_set_meta->core_valid_d[l3_set_way] =
-            static_cast<uint8_t>(1 << core_id);
 
         std::memcpy(req_core->l1d_datas[l1_set_index].data[l1_way] +
                         l1_to_offset(address),
@@ -566,6 +594,8 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     }
 
     // l3 miss
+    req_core->perf_counters.l3_misses++;
+
     uint8_t cache_line[LINE_SIZE];
     std::memcpy(cache_line, &memory[to_line_base(address)], LINE_SIZE);
 
@@ -573,7 +603,6 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     l3_fill<CacheType::Data>(cpu, l3_set_index, l3_set_tag, l3_way, cache_line,
                              MESIState::MODIFIED, core_id);
 
-    Core *req_core = &cpu->cores[core_id];
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
     uint16_t l1_set_index = l1_to_index(address);
@@ -594,30 +623,25 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
 
 static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address)
 {
-    for (uint8_t i = 0; i < NUM_CORES; i++) {
-        if (i == core_id) {
-            continue;
-        }
+    uint16_t l3_set_index = l3_to_index(address);
+    uint64_t l3_set_tag = l3_to_tag(address);
 
-        Core *core = &cpu->cores[i];
-        uint16_t l1_set_index = l1_to_index(address);
-        uint64_t l1_set_tag = l1_to_tag(address);
-        L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
+    L3SetMeta *l3_set_meta = &cpu->l3_metas[l3_set_index];
+    L3SetData *l3_set_data = &cpu->l3_datas[l3_set_index];
 
-        uint8_t l1_way;
-        if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
-            l1_set_meta->state[l1_way] = MESIState::INVALID;
-        }
+    uint8_t l3_set_way;
+    if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
+        snoop_invalidate_peers(cpu, core_id, address, l3_set_meta, l3_set_data,
+                        l3_set_way);
     }
 }
 
-static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
-                           uint8_t *data, uint8_t data_size, uint8_t *memory)
+void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
+              uint8_t data_size, uint8_t *memory)
 {
+    Core *core = &cpu->cores[core_id];
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
-
-    Core *core = &cpu->cores[core_id];
     L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
     L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
 
@@ -628,6 +652,8 @@ static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
                     data_size);
         return;
     }
+
+    core->perf_counters.l1d_misses++;
 
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
@@ -649,16 +675,17 @@ static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
         return;
     }
 
+    core->perf_counters.l2_misses++;
+
     bus_read_data(cpu, core_id, address, data, data_size, memory);
 }
 
-static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
-                            uint8_t *data, uint8_t data_size, uint8_t *memory)
+void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
+               uint8_t data_size, uint8_t *memory)
 {
+    Core *core = &cpu->cores[core_id];
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
-
-    Core *core = &cpu->cores[core_id];
     L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
     L1SetData *l1_set_data = &core->l1d_datas[l1_set_index];
 
@@ -683,6 +710,8 @@ static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
                     data_size);
         return;
     }
+
+    core->perf_counters.l1d_misses++;
 
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
@@ -715,16 +744,17 @@ static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
         return;
     }
 
+    core->perf_counters.l2_misses++;
+
     bus_read_exclusive(cpu, core_id, address, data, data_size, memory);
 }
 
-static void processor_fetch(CPU *cpu, uint8_t core_id, uint64_t address,
-                            uint8_t *data, uint8_t data_size, uint8_t *memory)
+void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
+               uint8_t data_size, uint8_t *memory)
 {
+    Core *core = &cpu->cores[core_id];
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
-
-    Core *core = &cpu->cores[core_id];
     L1SetMeta *l1_set_meta = &core->l1i_metas[l1_set_index];
     L1SetData *l1_set_data = &core->l1i_datas[l1_set_index];
 
@@ -735,6 +765,8 @@ static void processor_fetch(CPU *cpu, uint8_t core_id, uint64_t address,
                     data_size);
         return;
     }
+
+    core->perf_counters.l1i_misses++;
 
     uint16_t l2_set_index = l2_to_index(address);
     uint64_t l2_set_tag = l2_to_tag(address);
@@ -755,6 +787,8 @@ static void processor_fetch(CPU *cpu, uint8_t core_id, uint64_t address,
                     data_size);
         return;
     }
+
+    core->perf_counters.l2_misses++;
 
     bus_read_instruction(cpu, core_id, address, data, data_size, memory);
 }
