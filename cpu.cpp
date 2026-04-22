@@ -9,7 +9,7 @@ static void plru_update(T *plru_bits, uint8_t way)
 {
     uint8_t node = (WAYS - 1) + way;
     while (node > 0) {
-        uint8_t parent = (node - 1) / 2;
+        uint8_t parent = static_cast<uint8_t>((node - 1) / 2);
         T mask = static_cast<T>(1 << parent);
         *plru_bits =
             static_cast<T>((*plru_bits & ~mask) | ((node & 1) << parent));
@@ -23,7 +23,7 @@ static uint8_t plru_victim(T plru_bits)
     uint8_t node = 0;
     while (node < WAYS - 1) {
         uint8_t bit = (plru_bits >> node) & 1;
-        node = 2 * node + 1 + bit;
+        node = static_cast<uint8_t>(2 * node + 1 + bit);
     }
     return node - (WAYS - 1);
 }
@@ -61,6 +61,12 @@ static bool l3_find_way(const L3SetMeta *meta, uint64_t tag, uint8_t *way)
     }
 
     return false;
+}
+
+static void flush(uint8_t *dest, uint8_t *src, MESIState *dest_state)
+{
+    std::memcpy(dest, src, LINE_SIZE);
+    *dest_state = MESIState::MODIFIED;
 }
 
 static void l1d_fill(Core *core, uint16_t l1_index, uint64_t l1_tag,
@@ -123,8 +129,7 @@ static void l1d_back_invalidate(Core *core, uint16_t l1_index, uint64_t l1_tag,
     uint8_t way;
     if (l1_find_way(meta, l1_tag, &way)) {
         if (meta->state[way] == MESIState::MODIFIED) {
-            std::memcpy(dirty_dest, data->data[way], LINE_SIZE);
-            *dirty_dest_state = MESIState::MODIFIED;
+            flush(dirty_dest, data->data[way], dirty_dest_state);
         }
         meta->state[way] = MESIState::INVALID;
     }
@@ -164,9 +169,8 @@ static uint8_t l1d_evict(Core *core, uint16_t l1_index)
 
         uint8_t l2_way;
         if (l2_find_way(l2_meta, l2_tag, &l2_way)) {
-            std::memcpy(l2_data->data[l2_way], l1_set_data->data[victim],
-                        LINE_SIZE);
-            l2_meta->state[l2_way] = MESIState::MODIFIED;
+            flush(l2_data->data[l2_way], l1_set_data->data[victim],
+                  &l2_meta->state[l2_way]);
         } else {
             // writeback policy ensures that l1 cacheline is always in l2
             std::unreachable();
@@ -177,8 +181,7 @@ static uint8_t l1d_evict(Core *core, uint16_t l1_index)
     return victim;
 }
 
-static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index,
-                        uint8_t *memory)
+static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index)
 {
     Core *core = &cpu->cores[core_id];
     L2SetMeta *l2_set_meta = &core->l2_metas[l2_index];
@@ -212,9 +215,8 @@ static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index,
 
         uint8_t l3_way;
         if (l3_find_way(l3_meta, l3_tag, &l3_way)) {
-            std::memcpy(l3_data->data[l3_way], l2_set_data->data[victim],
-                        LINE_SIZE);
-            l3_meta->state[l3_way] = MESIState::MODIFIED;
+            flush(l3_data->data[l3_way], l2_set_data->data[victim],
+                  &l3_meta->state[l3_way]);
         } else {
             std::unreachable();
         }
@@ -257,9 +259,8 @@ static uint8_t l3_evict(CPU *cpu, uint16_t l3_index, uint8_t *memory)
                                     &l2_meta->state[l2_way]);
 
                 if (l2_meta->state[l2_way] == MESIState::MODIFIED) {
-                    std::memcpy(l3_set_data->data[victim],
-                                l2_data->data[l2_way], LINE_SIZE);
-                    l3_set_meta->state[victim] = MESIState::MODIFIED;
+                    flush(l3_set_data->data[victim], l2_data->data[l2_way],
+                          &l3_set_meta->state[victim]);
                 }
                 l2_meta->state[l2_way] = MESIState::INVALID;
             }
@@ -281,8 +282,6 @@ static uint8_t l3_evict(CPU *cpu, uint16_t l3_index, uint8_t *memory)
     l3_set_meta->state[victim] = MESIState::INVALID;
     return victim;
 }
-
-static void flush() {}
 
 static void bus_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
                      uint8_t data_size, uint8_t *memory)
@@ -314,9 +313,9 @@ static void bus_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
 
                 switch (l1_set_meta->state[l1_way]) {
                 case MESIState::MODIFIED:
-                    std::memcpy(l3_set_data->data[l3_set_way],
-                                l1_set_data->data[l1_way], LINE_SIZE);
-                    l3_set_meta->state[l3_set_way] = MESIState::MODIFIED;
+                    flush(l3_set_data->data[l3_set_way],
+                          l1_set_data->data[l1_way],
+                          &l3_set_meta->state[l3_set_way]);
                     l1_set_meta->state[l1_way] = MESIState::SHARED;
                     break;
                 case MESIState::EXCLUSIVE:
@@ -339,7 +338,7 @@ static void bus_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
         uint16_t l1_set_index = l1_to_index(address);
         uint64_t l1_set_tag = l1_to_tag(address);
 
-        uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+        uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index);
         l2_fill(req_core, l2_set_index, l2_set_tag, l2_way,
                 l3_set_data->data[l3_set_way], fill_state);
 
@@ -370,7 +369,7 @@ static void bus_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
 
-    uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+    uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index);
     l2_fill(req_core, l2_set_index, l2_set_tag, l2_way, cache_line,
             MESIState::EXCLUSIVE);
 
@@ -408,9 +407,9 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
             if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
                 switch (l1_set_meta->state[l1_way]) {
                 case MESIState::MODIFIED:
-                    std::memcpy(l3_set_data->data[l3_set_way],
-                                l1_set_data->data[l1_way], LINE_SIZE);
-                    l3_set_meta->state[l3_set_way] = MESIState::MODIFIED;
+                    flush(l3_set_data->data[l3_set_way],
+                          l1_set_data->data[l1_way],
+                          &l3_set_meta->state[l3_set_way]);
                     l1_set_meta->state[l1_way] = MESIState::INVALID;
                     break;
                 case MESIState::EXCLUSIVE:
@@ -429,7 +428,7 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
         uint16_t l1_set_index = l1_to_index(address);
         uint64_t l1_set_tag = l1_to_tag(address);
 
-        uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+        uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index);
         l2_fill(req_core, l2_set_index, l2_set_tag, l2_way,
                 l3_set_data->data[l3_set_way], MESIState::MODIFIED);
 
@@ -460,7 +459,7 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     uint16_t l1_set_index = l1_to_index(address);
     uint64_t l1_set_tag = l1_to_tag(address);
 
-    uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index, memory);
+    uint8_t l2_way = l2_evict(cpu, core_id, l2_set_index);
     l2_fill(req_core, l2_set_index, l2_set_tag, l2_way, cache_line,
             MESIState::MODIFIED);
 
@@ -471,9 +470,23 @@ static void bus_read_exclusive(CPU *cpu, uint8_t core_id, uint64_t address,
     std::memcpy(data, cache_line + l1_to_offset(address), data_size);
 }
 
-static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address,
-                        uint8_t *memory)
+static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address)
 {
+    for (uint8_t i = 0; i < NUM_CORES; i++) {
+        if (i == core_id) {
+            continue;
+        }
+
+        Core *core = &cpu->cores[i];
+        uint16_t l1_set_index = l1_to_index(address);
+        uint64_t l1_set_tag = l1_to_tag(address);
+        L1SetMeta *l1_set_meta = &core->l1d_metas[l1_set_index];
+
+        uint8_t l1_way;
+        if (l1_find_way(l1_set_meta, l1_set_tag, &l1_way)) {
+            l1_set_meta->state[l1_way] = MESIState::INVALID;
+        }
+    }
 }
 
 static void processor_read(CPU *cpu, uint8_t core_id, uint64_t address,
@@ -536,7 +549,7 @@ static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
             l1_set_meta->state[l1_set_way] = MESIState::MODIFIED;
             break;
         case MESIState::SHARED:
-            bus_upgrade(cpu, core_id, address, memory);
+            bus_upgrade(cpu, core_id, address);
             l1_set_meta->state[l1_set_way] = MESIState::MODIFIED;
             break;
         case MESIState::INVALID:
@@ -564,7 +577,7 @@ static void processor_write(CPU *cpu, uint8_t core_id, uint64_t address,
             l2_set_meta->state[l2_set_way] = MESIState::MODIFIED;
             break;
         case MESIState::SHARED:
-            bus_upgrade(cpu, core_id, address, memory);
+            bus_upgrade(cpu, core_id, address);
             l2_set_meta->state[l2_set_way] = MESIState::MODIFIED;
             break;
         case MESIState::INVALID:
