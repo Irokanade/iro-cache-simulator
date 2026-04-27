@@ -1,5 +1,5 @@
 # iro-cache-simulator
-A three-level cache simulator based on the Intel Core i7 architecture as presented in CMU 15-418/618 (Parallel Computer Architecture and Programming).
+Cachegrind inspired user space cpu cache simulator to count cache hits and cache miss of a program. This implementation is simple and uses cpu_read and cpu_write functions directly in source code to count.
 
 ## CPU Design
 - **4 cores**, each with independent L1 data and instruction caches
