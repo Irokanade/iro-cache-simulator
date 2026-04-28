@@ -380,6 +380,8 @@ static uint8_t l2_evict(CPU *cpu, uint8_t core_id, uint16_t l2_index)
                 static_cast<uint8_t>(~(1 << core_id));
             l3_meta->core_valid_i[l3_way] &=
                 static_cast<uint8_t>(~(1 << core_id));
+        } else {
+            std::unreachable();
         }
     }
 
@@ -781,6 +783,8 @@ static void bus_upgrade(CPU *cpu, uint8_t core_id, uint64_t address)
     if (l3_find_way(l3_set_meta, l3_set_tag, &l3_set_way)) {
         snoop_invalidate_peers(cpu, core_id, address, l3_set_meta, l3_set_data,
                                l3_set_way);
+    } else {
+        std::unreachable();
     }
 }
 
