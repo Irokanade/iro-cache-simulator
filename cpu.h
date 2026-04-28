@@ -530,6 +530,9 @@ static void snoop_invalidate_peers(CPU *cpu, uint8_t core_id, uint64_t address,
         L1SetMeta *l1_meta = &core->l1d_metas[l1_set_index];
         L1SetData *l1_data = &core->l1d_datas[l1_set_index];
 
+        L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
+        L2SetData *l2_data = &core->l2_datas[l2_set_index];
+
         uint8_t l1_way;
         if (l1_find_way(l1_meta, l1_set_tag, &l1_way)) {
             if (l1_meta->state[l1_way] == MESIState::MODIFIED) {
@@ -537,18 +540,20 @@ static void snoop_invalidate_peers(CPU *cpu, uint8_t core_id, uint64_t address,
                       &l3_set_meta->state[l3_set_way]);
             }
             l1_meta->state[l1_way] = MESIState::INVALID;
-        }
 
-        L2SetMeta *l2_meta = &core->l2_metas[l2_set_index];
-        L2SetData *l2_data = &core->l2_datas[l2_set_index];
-
-        uint8_t l2_way;
-        if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
-            if (l2_meta->state[l2_way] == MESIState::MODIFIED) {
-                flush(l3_set_data->data[l3_set_way], l2_data->data[l2_way],
-                      &l3_set_meta->state[l3_set_way]);
+            uint8_t l2_way;
+            if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
+                l2_meta->state[l2_way] = MESIState::INVALID;
             }
-            l2_meta->state[l2_way] = MESIState::INVALID;
+        } else {
+            uint8_t l2_way;
+            if (l2_find_way(l2_meta, l2_set_tag, &l2_way)) {
+                if (l2_meta->state[l2_way] == MESIState::MODIFIED) {
+                    flush(l3_set_data->data[l3_set_way], l2_data->data[l2_way],
+                          &l3_set_meta->state[l3_set_way]);
+                }
+                l2_meta->state[l2_way] = MESIState::INVALID;
+            }
         }
 
         l1i_back_invalidate(core, l1_set_index, l1_set_tag);
