@@ -560,7 +560,16 @@ static void snoop_invalidate_peers(CPU *cpu, uint8_t core_id, uint64_t address,
     }
 
     l3_set_meta->core_valid_d[l3_set_way] = static_cast<uint8_t>(1 << core_id);
-    l3_set_meta->core_valid_i[l3_set_way] = 0;
+    // Peers' L1I copies were invalidated above, but the requesting core's
+    // L1I may still hold the line (bus_upgrade doesn't touch the requester's
+    // instruction cache). Preserve that bit.
+    uint8_t l1i_way;
+    uint8_t req_i_bit = 0;
+    if (l1_find_way(&cpu->cores[core_id].l1i_metas[l1_set_index], l1_set_tag,
+                    &l1i_way)) {
+        req_i_bit = static_cast<uint8_t>(1 << core_id);
+    }
+    l3_set_meta->core_valid_i[l3_set_way] = req_i_bit;
 }
 
 static void bus_read_data(CPU *cpu, uint8_t core_id, uint64_t address,
@@ -807,6 +816,17 @@ inline void cpu_read(CPU *cpu, uint8_t core_id, uint64_t address, uint8_t *data,
                  l2_set_data->data[l2_set_way], l2_set_meta->state[l2_set_way]);
         plru_update<uint8_t, NUM_L2_WAYS>(&l2_set_meta->plru_bits, l2_set_way);
 
+        // The line may have entered L2 via instruction fetch (core_valid_i
+        // set, core_valid_d not). Update L3 so it knows this core now has a
+        // data-path copy; otherwise L3 eviction skips L1D back-invalidation.
+        uint16_t l3_idx = l3_to_index(address);
+        uint64_t l3_tg = l3_to_tag(address);
+        L3SetMeta *l3m = &cpu->l3_metas[l3_idx];
+        uint8_t l3w;
+        if (l3_find_way(l3m, l3_tg, &l3w)) {
+            l3m->core_valid_d[l3w] |= static_cast<uint8_t>(1 << core_id);
+        }
+
         std::memcpy(data,
                     core->l1d_datas[l1_set_index].data[way] +
                         l1_to_offset(address),
@@ -880,6 +900,15 @@ inline void cpu_write(CPU *cpu, uint8_t core_id, uint64_t address,
         std::memcpy(l1_set_data->data[way] + l1_to_offset(address), data,
                     data_size);
         plru_update<uint8_t, NUM_L2_WAYS>(&l2_set_meta->plru_bits, l2_set_way);
+
+        uint16_t l3_idx = l3_to_index(address);
+        uint64_t l3_tg = l3_to_tag(address);
+        L3SetMeta *l3m = &cpu->l3_metas[l3_idx];
+        uint8_t l3w;
+        if (l3_find_way(l3m, l3_tg, &l3w)) {
+            l3m->core_valid_d[l3w] |= static_cast<uint8_t>(1 << core_id);
+        }
+
         return;
     }
 
@@ -919,6 +948,14 @@ inline void cpu_fetch(CPU *cpu, uint8_t core_id, uint64_t address,
         l1i_fill(core, l1_set_index, l1_set_tag, way,
                  l2_set_data->data[l2_set_way], MESIState::SHARED);
         plru_update<uint8_t, NUM_L2_WAYS>(&l2_set_meta->plru_bits, l2_set_way);
+
+        uint16_t l3_idx = l3_to_index(address);
+        uint64_t l3_tg = l3_to_tag(address);
+        L3SetMeta *l3m = &cpu->l3_metas[l3_idx];
+        uint8_t l3w;
+        if (l3_find_way(l3m, l3_tg, &l3w)) {
+            l3m->core_valid_i[l3w] |= static_cast<uint8_t>(1 << core_id);
+        }
 
         std::memcpy(data,
                     core->l1i_datas[l1_set_index].data[way] +
