@@ -1,7 +1,5 @@
 # MacOS
 .DS_Store
 
-# Object files
-*.o
-*.d
+# Build
 main
